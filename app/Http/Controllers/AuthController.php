@@ -6,6 +6,9 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use Laravel\Socialite\Facades\Socialite;
 
 class AuthController extends Controller
 {
@@ -43,19 +46,70 @@ class AuthController extends Controller
     {
         $data = $request->validate([
             'name' => 'required|string|max:255',
-            'username' => 'required|string|max:255|unique:users,username',
             'email' => 'required|email|max:255|unique:users,email',
             'password' => 'required|string|min:8|confirmed',
-            'role' => 'required|in:admin,user',
         ]);
+
+        $usernameBase = Str::slug(explode('@', $data['email'])[0]);
+        $username = $usernameBase;
+        $count = 1;
+
+        while (User::where('username', $username)->exists()) {
+            $username = $usernameBase . $count++;
+        }
 
         $user = User::create([
             'name' => $data['name'],
-            'username' => $data['username'],
+            'username' => $username,
             'email' => $data['email'],
             'password' => $data['password'],
-            'role' => $data['role'],
+            'role' => 'user',
         ]);
+
+        Auth::login($user);
+
+        return redirect()->route('dashboard');
+    }
+
+    public function redirectToGoogle()
+    {
+        return Socialite::driver('google')->redirect();
+    }
+
+    public function handleGoogleCallback()
+    {
+        try {
+            $googleUser = Socialite::driver('google')->stateless()->user();
+        } catch (\Exception $e) {
+            Log::error('Google login failed: ' . $e->getMessage());
+            return redirect()->route('login')->withErrors(['google' => 'Gagal masuk dengan Google. Silakan coba lagi.']);
+        }
+
+        $user = User::where('email', $googleUser->getEmail())->first();
+
+        if ($user) {
+            if (! empty($googleUser->getId()) && empty($user->google_id)) {
+                $user->google_id = $googleUser->getId();
+                $user->save();
+            }
+        } else {
+            $usernameBase = Str::slug(explode('@', $googleUser->getEmail())[0]);
+            $username = $usernameBase;
+            $count = 1;
+
+            while (User::where('username', $username)->exists()) {
+                $username = $usernameBase . $count++;
+            }
+
+            $user = User::create([
+                'name' => $googleUser->getName() ?? $googleUser->getNickname() ?? 'Pengguna Google',
+                'username' => $username,
+                'email' => $googleUser->getEmail(),
+                'password' => bcrypt(Str::random(16)),
+                'role' => 'user',
+                'google_id' => $googleUser->getId(),
+            ]);
+        }
 
         Auth::login($user);
 
